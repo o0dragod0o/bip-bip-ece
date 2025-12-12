@@ -1,336 +1,365 @@
+#include <Arduino.h>
 #include <SPI.h>
 #include <RF24.h>
 #include <Wire.h>
 #include <Adafruit_SSD1306.h>
+#include <EEPROM.h> // Nécessaire pour EF15 (sauvegarde)
 
 // ---------------- HARDWARE PINS -----------------
+// Définis selon le tableau de connexions [cite: 168]
 #define PIN_ENCODER_A 3
 #define PIN_ENCODER_B 4
-#define PIN_ENCODER_SW 2   // bouton de l'encodeur
-#define PIN_SEND_BUTTON A6
+#define PIN_ENCODER_SW 2
+#define PIN_SEND_BUTTON A6 // Attention: Entrée analogique seulement!
 #define PIN_LED_R 5
 #define PIN_LED_G 6
 #define PIN_LED_B 9
-#define PIN_BUZZER 10
+#define PIN_BUZZER 10      // Attention au conflit SPI 
 #define PIN_NRF_CE 7
 #define PIN_NRF_CSN 8
 
-// ---------------- GLOBAL VARIABLES ----------------
-RF24 radio(PIN_NRF_CE, PIN_NRF_CSN);
-byte address[6] = "CHAN1";
-Adafruit_SSD1306 display(128, 64, &Wire,-1);
+// ---------------- PARAMÈTRES & CONSTANTES ----------------
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define EEPROM_ADDR 0     // Adresse de début de sauvegarde
 
-char pseudo[16] = "USER";
-uint8_t canal = 76;
+// Liste des caractères disponibles (EF2: Français inclus) [cite: 72]
+// Note: L'affichage des accents dépend de la police CP437
+const char charMap[] = " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.,!?'-_@#&()éèàç";
+const int charMapLen = sizeof(charMap) - 1;
 
-String message = "";
-uint8_t priority = 1; // 0=high,1=medium,2=low
+// ---------------- STRUCTURES DE DONNÉES ----------------
 
-// Menu states
-enum MenuState { MENU_MAIN, MENU_WRITE_MESSAGE, MENU_SETTINGS, MENU_EDIT_PSEUDO, MENU_EDIT_CANAL };
-MenuState menuState = MENU_MAIN;
-int8_t menuIndex = 0; // curseur dans menu ou paramètres
-
-// ---------------- PACKET STRUCTURES ----------------
-struct HeaderPacket {
-  uint8_t id;
-  uint8_t totalPackets;
+// Structure pour sauvegarder les réglages en EEPROM (EF15) [cite: 95]
+struct Config {
   char pseudo[16];
-  uint8_t priority;
+  uint8_t canal;     // 0-125
+  uint8_t melody;    // 0-2 (EF14)
+  uint8_t magic;     // Pour vérifier si l'EEPROM est initialisée
 };
+
+Config settings;
+
+// Structures pour le protocole Radio (EF4, EF5) [cite: 75, 76]
+struct HeaderPacket {
+  uint8_t type;         // 0 = Header
+  uint8_t totalPackets;
+  uint8_t msgId;        // ID unique pour éviter les doublons
+  char pseudo[16];      // EF5
+  uint8_t priority;     // EF3
+};
+
 struct DataPacket {
-  uint8_t id;
-  char data[30];
+  uint8_t type;         // 1 = Data
+  uint8_t seqNum;       // Numéro du paquet (1, 2, 3...)
+  uint8_t msgId;        // Lien avec le Header
+  char data[28];        // Payload (Max 32 octets total pour NRF24) 
 };
 
-// ---------------- ENCODER ----------------
-volatile int16_t encoderValue = 0;
+// ---------------- VARIABLES GLOBALES ----------------
+RF24 radio(PIN_NRF_CE, PIN_NRF_CSN);
+const byte pipeAddress[6] = "BIP25"; // Adresse fixe, on change la fréquence (canal)
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+
+// Variables d'état
+String inputMessage = "";
+volatile int encoderCount = 0;
+int lastEncoderCount = 0;
+unsigned long lastButtonPress = 0;
+
+// États du Menu
+enum State { MAIN_MENU, WRITE_MSG, SETTINGS, READ_MSG, ALERT };
+State currentState = MAIN_MENU;
+int menuIndex = 0;
+
+// Réception
+String receivedMsgBuffer = "";
+String receivedPseudo = "";
+uint8_t receivedPriority = 0;
+unsigned long alertStartTime = 0;
+
+// ---------------- GESTION ENCODEUR & BOUTONS ----------------
 void encoderISR() {
-  if (digitalRead(PIN_ENCODER_A) == digitalRead(PIN_ENCODER_B)) encoderValue++;
-  else encoderValue--;
+  // Lecture simple de l'encodeur
+  if (digitalRead(PIN_ENCODER_A) == digitalRead(PIN_ENCODER_B)) {
+    encoderCount++;
+  } else {
+    encoderCount--;
+  }
 }
 
-// ---------------- BUTTONS ----------------
-bool detectSendButton() {
-  static bool last = false;
-  bool cur = analogRead(PIN_SEND_BUTTON) < 200;
-  bool pressed = (cur && !last);
-  last = cur;
-  return pressed;
+int getEncoderDelta() {
+  int delta = encoderCount - lastEncoderCount;
+  lastEncoderCount = encoderCount;
+  return delta;
 }
 
-bool detectEncoderButton() {
-  static bool last = false;
-  bool cur = digitalRead(PIN_ENCODER_SW) == LOW;
-  bool pressed = (cur && !last);
-  last = cur;
-  return pressed;
+// EF9: Bouton "Envoyer" sur A6 (Analogique) 
+bool isSendButtonPressed() {
+  // A6 est analogique. Avec Pull-up 10k, non appuyé ~= 1023, appuyé ~= 0.
+  // Seuil à 500 pour être sûr.
+  if (analogRead(PIN_SEND_BUTTON) < 500) {
+    if (millis() - lastButtonPress > 300) { // Debounce
+      lastButtonPress = millis();
+      return true;
+    }
+  }
+  return false;
 }
 
-// ---------------- RADIO SEND WITH ACK ----------------
-bool sendLongMessage(const String &msg, const char *pseudo, uint8_t priority) {
-  uint8_t totalPackets = (msg.length() + 29) / 30;
+bool isEncoderButtonPressed() {
+  if (digitalRead(PIN_ENCODER_SW) == LOW) {
+    if (millis() - lastButtonPress > 300) {
+      lastButtonPress = millis();
+      return true;
+    }
+  }
+  return false;
+}
 
-  HeaderPacket header;
-  header.id = 0;
-  header.totalPackets = totalPackets;
-  header.priority = priority;
-  strncpy(header.pseudo, pseudo, 15);
-  header.pseudo[15] = '\0';
+// ---------------- EEPROM (EF15) ----------------
+void loadConfiguration() {
+  EEPROM.get(EEPROM_ADDR, settings);
+  // Si la mémoire est vierge ou corrompue, mettre les défauts
+  if (settings.magic != 0x42) {
+    strcpy(settings.pseudo, "USER");
+    settings.canal = 76;
+    settings.melody = 0;
+    settings.magic = 0x42;
+    EEPROM.put(EEPROM_ADDR, settings);
+  }
+}
 
+void saveConfiguration() {
+  EEPROM.put(EEPROM_ADDR, settings);
+}
+
+// ---------------- AUDIO & LED (EF6, EF7, EF14) ----------------
+void playTone(int priority, int melodyType) {
+  // Désactive le SPI buzzer si nécessaire, mais ici on utilise tone() ou analogWrite
+  // EF7: Couleur selon priorité
+  if (priority == 0) { // High
+    analogWrite(PIN_LED_R, 255); analogWrite(PIN_LED_G, 0); analogWrite(PIN_LED_B, 0);
+  } else if (priority == 1) { // Medium
+    analogWrite(PIN_LED_R, 255); analogWrite(PIN_LED_G, 128); analogWrite(PIN_LED_B, 0);
+  } else { // Low
+    analogWrite(PIN_LED_R, 0); analogWrite(PIN_LED_G, 255); analogWrite(PIN_LED_B, 0);
+  }
+
+  // EF14: Choix sonorité
+  // Ceci est une implémentation bloquante simple. Pour du non-bloquant, utiliser millis().
+  if (melodyType == 0) {
+    tone(PIN_BUZZER, 1000, 200); delay(250); tone(PIN_BUZZER, 2000, 200);
+  } else if (melodyType == 1) {
+    tone(PIN_BUZZER, 500, 100); delay(150); tone(PIN_BUZZER, 500, 100);
+  } else {
+    // Mode silencieux ou juste LED
+  }
+}
+
+void stopAlert() { // EF8
+  noTone(PIN_BUZZER);
+  analogWrite(PIN_LED_R, 0); analogWrite(PIN_LED_G, 0); analogWrite(PIN_LED_B, 0);
+}
+
+// ---------------- RADIO (EF4, EF5, EF12) ----------------
+void sendRadioMessage() {
   radio.stopListening();
-  bool success = radio.write(&header, sizeof(header));
-  if (!success) return false;
+  
+  // Générer un ID de message aléatoire
+  uint8_t msgId = random(0, 255);
+  int len = inputMessage.length();
+  int totalPackets = (len / 28) + ((len % 28) ? 1 : 0);
 
+  // 1. Envoyer Header
+  HeaderPacket header;
+  header.type = 0;
+  header.totalPackets = totalPackets;
+  header.msgId = msgId;
+  strncpy(header.pseudo, settings.pseudo, 15);
+  header.pseudo[15] = '\0';
+  header.priority = 1; // Priorité moyenne par défaut (à améliorer dans le menu)
 
-  for (uint8_t i = 0; i < totalPackets; i++) {
+  if (!radio.write(&header, sizeof(header))) {
+    // Echec envoi header
+    radio.startListening();
+    return;
+  }
+
+  // 2. Envoyer Data (Fragmentation) [cite: 78, 79]
+  for (int i = 0; i < totalPackets; i++) {
     DataPacket pkt;
-    pkt.id = i + 1;
-    int start = i * 30;
-    int len = min(30, (int)(msg.length() - start));
-    memset(pkt.data, 0, 30);
-    memcpy(pkt.data, msg.c_str() + start, len);
-    if (!radio.write(&pkt, sizeof(pkt))) return false;
+    pkt.type = 1;
+    pkt.seqNum = i;
+    pkt.msgId = msgId;
+    
+    int startIdx = i * 28;
+    String chunk = inputMessage.substring(startIdx, startIdx + 28);
+    chunk.toCharArray(pkt.data, 28); // Copie safe
+    
+    delay(5); // Petit délai pour laisser le récepteur respirer
+    radio.write(&pkt, sizeof(pkt));
   }
 
   radio.startListening();
-  return success;
+  inputMessage = ""; // Reset message
 }
 
-// ---------------- RADIO RECEIVE ---------------------
-String recvMessage = "";
-String recvPseudo = "";
-uint8_t recvPriority = 0;
-uint8_t expectedPackets = 0;
-uint8_t packetsReceived = 0;
-bool buzzerActive = false;
-
-void handleHeader(const HeaderPacket &h) {
-  recvPseudo = h.pseudo;
-  recvPriority = h.priority;
-  expectedPackets = h.totalPackets;
-  packetsReceived = 0;
-  recvMessage = "";
+// ---------------- MENUS ET AFFICHAGE ----------------
+void drawTextCentered(String text, int y) {
+  int16_t x1, y1; uint16_t w, h;
+  display.getTextBounds(text, 0, 0, &x1, &y1, &w, &h);
+  display.setCursor((SCREEN_WIDTH - w) / 2, y);
+  display.print(text);
 }
 
-void handleData(const DataPacket &p) {
-  recvMessage += String(p.data);
-  packetsReceived++;
-
-  if (packetsReceived == expectedPackets) {
-    buzzerActive = true;
-
-    switch(recvPriority) {
-      case 0: analogWrite(PIN_LED_R,255); analogWrite(PIN_LED_G,0); analogWrite(PIN_LED_B,0); break;
-      case 1: analogWrite(PIN_LED_R,255); analogWrite(PIN_LED_G,255); analogWrite(PIN_LED_B,0); break;
-      case 2: analogWrite(PIN_LED_R,0); analogWrite(PIN_LED_G,255); analogWrite(PIN_LED_B,0); break;
-    }
-
-    display.clearDisplay();
-    display.setCursor(0,0);
-    display.print("De: "); display.println(recvPseudo);
-    display.print("Msg: "); display.println(recvMessage);
-    display.display();
-  }
-}
-
-// ---------------- MENU HANDLER ----------------
-void handleMenu() {
-  static char currentChar = 'A';
-
+void runMenuLogic() {
   display.clearDisplay();
-  display.setCursor(0,0);
+  
+  if (currentState == MAIN_MENU) {
+    display.setCursor(0, 0); display.println("--- BIP BIP ECE ---");
+    const char* options[] = {"Ecrire Msg", "Reglages", "Dernier Msg"};
+    
+    menuIndex += getEncoderDelta();
+    if (menuIndex < 0) menuIndex = 2;
+    if (menuIndex > 2) menuIndex = 0;
 
-  // ---- MENU PRINCIPAL ----
-  if(menuState == MENU_MAIN){
-    display.println(menuIndex==0?"> Ecrire message":"  Ecrire message");
-    display.println(menuIndex==1?"> Parametres":"  Parametres");
-    display.display();
-
-    if(encoderValue != 0){
-      menuIndex = (menuIndex + (encoderValue > 0 ? 1 : -1) + 2) % 2;
-      encoderValue = 0;
+    for (int i = 0; i < 3; i++) {
+      if (i == menuIndex) display.print("> ");
+      else display.print("  ");
+      display.println(options[i]);
     }
 
-    if(detectSendButton()){
-      menuState = (menuIndex==0)? MENU_WRITE_MESSAGE : MENU_SETTINGS;
-      menuIndex = 0; // curseur dans sous-menu
+    if (isEncoderButtonPressed()) {
+      if (menuIndex == 0) currentState = WRITE_MSG;
+      if (menuIndex == 1) currentState = SETTINGS;
+      if (menuIndex == 2) currentState = READ_MSG;
+      menuIndex = 0; encoderCount = 0;
     }
-  }
+  } 
+  else if (currentState == WRITE_MSG) {
+    // Éditeur de texte style "SMS Nokia"
+    static int charIndex = 0;
+    charIndex += getEncoderDelta();
+    if (charIndex < 0) charIndex = charMapLen - 1;
+    if (charIndex >= charMapLen) charIndex = 0;
 
-  // ---- ECRITURE MESSAGE ----
-  else if(menuState == MENU_WRITE_MESSAGE){
-    display.clearDisplay();
-    display.setCursor(0,0); // <-- remise à zéro du curseur
-    display.print("Message: "); display.println(message);
-    display.print("Lettre: "); display.println(currentChar);
-    display.display();
+    display.setCursor(0, 0); display.print("Vers: TOUS");
+    display.setCursor(0, 10); display.println(inputMessage);
+    display.setCursor(0, 55); 
+    display.print("Char: ["); display.print(charMap[charIndex]); display.print("]");
 
-    // Tourner l'encodeur pour changer la lettre
-    if(encoderValue != 0){
-      currentChar += (encoderValue > 0 ? 1 : -1);
-      if(currentChar > 126) currentChar = 32;
-      if(currentChar < 32) currentChar = 126;
-      encoderValue = 0;
+    if (isEncoderButtonPressed()) {
+      inputMessage += charMap[charIndex]; // Ajoute le caractère
     }
-
-    // Bouton encodeur pour valider la lettre
-    if(detectEncoderButton()){
-      message += currentChar;
-      currentChar = 'A';
-      delay(100); // petit délai pour debounce bouton
-    }
-
-    // Bouton A6 pour envoyer
-    if(detectSendButton() && message.length() > 0){
-      bool ack = sendLongMessage(message, pseudo, priority);
+    
+    // Bouton A6 pour envoyer (EF4)
+    if (isSendButtonPressed()) {
       display.clearDisplay();
-      display.setCursor(0,0);
-      if(ack) display.println("Message recu");
-      else display.println("Echec envoi");
+      drawTextCentered("ENVOI...", 30);
       display.display();
-      message = "";
+      sendRadioMessage();
       delay(1000);
-      menuState = MENU_MAIN;
-      menuIndex = 0;
+      currentState = MAIN_MENU;
+    }
+  }
+  else if (currentState == SETTINGS) {
+    const char* opts[] = {"Pseudo", "Canal", "Melodie", "Retour"};
+    // Navigation simple... (à développer pour éditer chaque champ)
+    // Ici, implémentation simplifiée pour l'exemple :
+    display.setCursor(0,0); display.println("REGLAGES (Simu)");
+    display.print("Canal: "); display.println(settings.canal);
+    display.print("Pseudo: "); display.println(settings.pseudo);
+    display.println("\n[Btn] pour retour");
+    
+    // Logique simplifiée : appui bouton = changer canal +1 pour test
+    if (isEncoderButtonPressed()) {
+      settings.canal = (settings.canal + 1) % 126;
+      radio.setChannel(settings.canal);
+      saveConfiguration(); // Sauvegarde (EF15)
+    }
+    if (isSendButtonPressed()) currentState = MAIN_MENU;
+  }
+  else if (currentState == READ_MSG || currentState == ALERT) {
+    display.setCursor(0, 0); 
+    display.print("De: "); display.println(receivedPseudo);
+    display.println("---");
+    display.println(receivedMsgBuffer);
+    
+    // Arrêter l'alerte si l'utilisateur appuie sur un bouton (EF8) [cite: 84]
+    if (currentState == ALERT) {
+       playTone(receivedPriority, settings.melody); // Joue le son en boucle (court)
+       if (isEncoderButtonPressed() || isSendButtonPressed()) {
+         stopAlert();
+         currentState = READ_MSG; // Passe en mode lecture simple
+       }
+    } else {
+       if (isSendButtonPressed()) currentState = MAIN_MENU;
     }
   }
 
-  // ---- PARAMETRES ----
-  else if(menuState == MENU_SETTINGS){
-    display.println("Parametres:");
-    display.print(menuIndex==0?"> ":"  "); display.print("Pseudo: "); display.println(pseudo);
-    display.print(menuIndex==1?"> ":"  "); display.print("Canal: "); display.println(canal);
-    display.display();
-
-    // Naviguer entre Pseudo et Canal avec l'encodeur
-    if(encoderValue != 0){
-      menuIndex = (menuIndex + (encoderValue > 0 ? 1 : -1) + 2) % 2;
-      encoderValue = 0;
-    }
-
-    // Entrer dans l'édition
-    if(detectEncoderButton()){
-      if(menuIndex==0){ // Pseudo
-        for(int i=0;i<16;i++) pseudo[i]='\0';
-        currentChar = 'A';
-        menuState = MENU_EDIT_PSEUDO;
-      }
-      else if(menuIndex==1){ // Canal
-        menuState = MENU_EDIT_CANAL;
-      }
-    }
-    if(detectSendButton()) menuState = MENU_MAIN;
-  }
-
-  // ---- EDITION PSEUDO ----
-  else if(menuState == MENU_EDIT_PSEUDO){
-    display.print("Pseudo: "); display.println(pseudo);
-    display.print("Lettre: "); display.println(currentChar);
-    display.display();
-
-    if(encoderValue != 0){
-      currentChar += (encoderValue > 0 ? 1 : -1);
-      if(currentChar > 126) currentChar = 32;
-      if(currentChar < 32) currentChar = 126;
-      encoderValue = 0;
-    }
-
-    if(detectEncoderButton()){
-      for(int i=0;i<16;i++){
-        if(pseudo[i]=='\0'){
-          pseudo[i] = currentChar;
-          pseudo[i+1] = '\0';
-          break;
-        }
-      }
-      currentChar = 'A';
-    }
-
-    if(detectSendButton()) menuState = MENU_SETTINGS;
-  }
-
-  // ---- EDITION CANAL ----
-  else if(menuState == MENU_EDIT_CANAL){
-    display.print("Canal: "); display.println(canal);
-    display.display();
-
-    if(encoderValue != 0){
-      canal += (encoderValue > 0 ? 1 : -1);
-      if(canal > 125) canal = 125;
-      if(canal < 0) canal = 0;
-      encoderValue = 0;
-    }
-
-    if(detectSendButton()) menuState = MENU_SETTINGS;
-  }
+  display.display();
 }
 
-// ------------------- SETUP -------------------------
+// ---------------- SETUP & LOOP ----------------
 void setup() {
   Serial.begin(115200);
 
-  pinMode(PIN_BUZZER, OUTPUT);
-  digitalWrite(PIN_BUZZER, LOW);
+  // Config Pins
   pinMode(PIN_ENCODER_A, INPUT_PULLUP);
   pinMode(PIN_ENCODER_B, INPUT_PULLUP);
   pinMode(PIN_ENCODER_SW, INPUT_PULLUP);
-  pinMode(PIN_LED_R, OUTPUT);
-  pinMode(PIN_LED_G, OUTPUT);
-  pinMode(PIN_LED_B, OUTPUT);
+  // PIN_SEND_BUTTON (A6) est input analogique par défaut
+  pinMode(PIN_LED_R, OUTPUT); pinMode(PIN_LED_G, OUTPUT); pinMode(PIN_LED_B, OUTPUT);
+  
+  // Important: Mettre D10 en OUTPUT LOW avant radio.begin pour éviter parasites buzzer 
+  pinMode(PIN_BUZZER, OUTPUT); digitalWrite(PIN_BUZZER, LOW);
 
+  // Interrupt Encodeur
   attachInterrupt(digitalPinToInterrupt(PIN_ENCODER_A), encoderISR, CHANGE);
 
-  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
-  display.clearDisplay();
-  display.setTextSize(1);
+  // Init Ecran
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println(F("SSD1306 allocation failed"));
+    for(;;);
+  }
+  display.cp437(true); // Active la page de code pour caractères étendus (accents) [cite: 72]
   display.setTextColor(SSD1306_WHITE);
-  display.display();
+  display.clearDisplay();
 
+  // Init EEPROM & Radio
+  loadConfiguration(); // Récupère canal et pseudo [cite: 95]
+  
   radio.begin();
-  radio.setChannel(canal);
-  radio.openWritingPipe(address);
-  radio.openReadingPipe(1, address);
+  radio.setPALevel(RF24_PA_LOW); // PA Low pour éviter problèmes d'alim en USB
+  radio.setChannel(settings.canal); // EF12
+  radio.openWritingPipe(pipeAddress);
+  radio.openReadingPipe(1, pipeAddress);
   radio.startListening();
-  radio.setAutoAck(true);
-  radio.enableAckPayload();
-  radio.setRetries(5, 15);
 }
 
-// ------------------- LOOP --------------------------
 void loop() {
-  handleMenu();
-
-  // ---------------- RADIO RECEIVE ----------------
-  if(radio.available()){
+  // 1. Gestion Radio (Réception)
+  if (radio.available()) {
     uint8_t size = radio.getPayloadSize();
-    if(size == sizeof(HeaderPacket)){
-      HeaderPacket h;
-      radio.read(&h,sizeof(h));
-      handleHeader(h);
-    } else if(size == sizeof(DataPacket)){
-      DataPacket d;
-      radio.read(&d,sizeof(d));
-      handleData(d);
-    } else {
-      char buf[10];
-      radio.read(&buf,size);
-      if(strcmp(buf,"ACK")==0){
-        display.clearDisplay();
-        display.setCursor(0,0);
-        display.println("Message recu ✔");
-        display.display();
-      } else radio.flush_rx();
+    // Tampon générique
+    uint8_t buf[32];
+    radio.read(buf, size);
+
+    if (buf[0] == 0) { // Header Packet
+      HeaderPacket* h = (HeaderPacket*)buf;
+      receivedPseudo = String(h->pseudo);
+      receivedPriority = h->priority;
+      receivedMsgBuffer = ""; // Reset buffer
+    } else if (buf[0] == 1) { // Data Packet
+      DataPacket* d = (DataPacket*)buf;
+      receivedMsgBuffer += String(d->data);
+      // Déclenche l'alerte à chaque réception de bout de message (ou attendre la fin)
+      // Pour simplifier : on passe en mode alerte direct
+      currentState = ALERT; // EF6, EF10 [cite: 81, 86]
     }
   }
 
-  // ---------------- BUZZER ----------------
-  if(buzzerActive){
-    analogWrite(PIN_BUZZER,50); // moins fort, continu
-    if(detectSendButton()) buzzerActive = false; // stop buzzer
-  } else {
-    analogWrite(PIN_BUZZER,0);
-  }
-
-  delay(50);
+  // 2. Gestion Interface Utilisateur
+  runMenuLogic();
 }
