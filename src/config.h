@@ -2,12 +2,6 @@
 #define CONFIG_H
 
 #include <Arduino.h>
-#include <SPI.h>
-#include <RF24.h>
-#include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
-#include <EEPROM.h>
 
 // --- CONSTANTES ---
 #define MAX_MESSAGE_LEN 100   
@@ -20,16 +14,7 @@
 #define ADDR_SLOT     2   
 #define ADDR_SOUND    3   
 #define ADDR_PSEUDO   10  
-#define MAGIC_BYTE    99  
-
-// --- PRIORITÉS & SONS ---
-#define PRIO_FAIBLE 0 
-#define PRIO_MOYEN  1 
-#define PRIO_HAUTE  2 
-
-#define SON_CLASSIQUE 0
-#define SON_DOUBLE    1
-#define SON_CONTINU   2
+#define MAGIC_BYTE    101 // Changé
 
 // --- PINS ---
 #define PIN_CE 7
@@ -48,7 +33,15 @@
 #define SCREEN_HEIGHT 64
 #define OLED_RESET -1 
 
-// --- STRUCTURES & ENUMS ---
+// --- ENUMS & STRUCTS ---
+#define PRIO_FAIBLE 0 
+#define PRIO_MOYEN  1 
+#define PRIO_HAUTE  2 
+
+#define SON_CLASSIQUE 0
+#define SON_DOUBLE    1
+#define SON_CONTINU   2
+
 struct Packet {
   byte msgId;         
   byte packetIndex;   
@@ -69,29 +62,5 @@ enum Mode {
   MODE_CHOIX_PRIORITE,    
   MODE_ALERTE_RECU        
 };
-
-// --- VARIABLES GLOBALES PARTAGÉES (EXTERN) ---
-extern Adafruit_SSD1306 display;
-extern RF24 radio;
-extern const byte pipes[][6];
-
-extern char currentLetter; 
-extern char sharedBuffer[MAX_MESSAGE_LEN]; 
-extern char myPseudo[PSEUDO_LEN]; 
-extern char receivedPseudo[PSEUDO_LEN];     
-
-extern int cursorPosition; 
-extern byte currentMsgId; 
-extern byte selectedPriority; 
-extern byte receivedPriority;
-
-extern byte radioChannel; 
-extern byte radioSlot; 
-extern byte alertSound; 
-
-extern Mode currentMode;
-extern int menuSelection; 
-extern unsigned long buzzerTimer;
-extern int buzzerStep;
 
 #endif

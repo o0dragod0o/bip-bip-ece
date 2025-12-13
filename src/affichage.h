@@ -1,6 +1,6 @@
 #ifndef AFFICHAGE_H
 #define AFFICHAGE_H
-#include "Config.h"
+#include "Globals.h"
 
 void initAffichage();
 void updateDisplay();

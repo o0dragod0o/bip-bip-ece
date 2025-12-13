@@ -3,7 +3,6 @@
 void loadSettings() {
   byte marker = EEPROM.read(ADDR_MARKER);
   if (marker != MAGIC_BYTE) {
-    // Valeurs par défaut
     radioChannel = 76;
     radioSlot = 0; 
     alertSound = SON_CLASSIQUE; 

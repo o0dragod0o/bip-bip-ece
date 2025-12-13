@@ -1,6 +1,6 @@
 #ifndef RADIO_H
 #define RADIO_H
-#include "Config.h"
+#include "Globals.h"
 
 void initRadio();
 void configurerRadio();
