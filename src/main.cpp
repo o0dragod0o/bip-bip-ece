@@ -1,225 +1,288 @@
 /*
-* PROJET BIP BIP ECE - VERSION PCB SOUDÉ (A6 PULL-UP)
-* * LOGIQUE INVERSÉE :
-* - Le bouton connecte A6 au GND (Masse).
-* - Le code détecte l'appui quand la valeur tombe proche de 0.
+* PROJET BIP BIP ECE - VERSION MODULAIRE
 */
 
-#include <SPI.h>
-#include <RF24.h>
-#include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
+#include "Config.h"
+#include "Sauvegarde.h"
+#include "Affichage.h"
+#include "Radio.h"
 
-// --- IDENTIFICATION RADIO ---
-bool radioNumber = 1; // 0 ou 1
-
-// --- ECRAN ---
-#define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 64
-#define OLED_RESET -1 
+// --- VARIABLES GLOBALES (DEFINITIONS) ---
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-
-// --- PINS ---
-#define PIN_CE 7
-#define PIN_CSN 8
-#define PIN_BUZZER 10
-
-// --- BOUTONS ---
-#define ENC_CLK 3      
-#define ENC_DT 4       
-#define ENC_SW 2       
-#define BTN_SEND A6    // PCB SOUDÉ SUR A6
-
 RF24 radio(PIN_CE, PIN_CSN);
-const byte addresses[][6] = {"00001", "00002"};
+const byte pipes[][6] = {"00001", "00002"};
 
-// --- VARIABLES ---
-const char charset[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 "; 
-int charsetLen = sizeof(charset) - 1;
-int charIndex = 0; 
-char messageBuffer[32]; 
+char currentLetter = 'A'; 
+char sharedBuffer[MAX_MESSAGE_LEN]; 
+char myPseudo[PSEUDO_LEN]; 
+char receivedPseudo[PSEUDO_LEN];     
+
 int cursorPosition = 0; 
+byte currentMsgId = 0; 
+byte selectedPriority = PRIO_FAIBLE; 
+byte receivedPriority = PRIO_FAIBLE;
 
-// Variables Gestion
+byte radioChannel; 
+byte radioSlot; 
+byte alertSound;
+
+Mode currentMode = MODE_MENU_PRINCIPAL;
+int menuSelection = 0; 
 int lastClkState;
 unsigned long lastDebounceTime = 0;
-unsigned long messageTimer = 0;
-bool showingReceived = false;
+unsigned long buzzerTimer = 0;
+int buzzerStep = 0;
 
-// --- PROTOTYPES ---
-void updateDisplayComposition();
-void envoyerMessage();
-void afficherMessageRecu(char* msg);
-void resetComposition();
-bool verifierAppuiBasA6(); // Fonction modifiée (Active Low)
+// --- FONCTIONS LOGIQUES LOCALES ---
+void lettreSuivante() {
+  if (currentLetter == 'Z') currentLetter = '0';
+  else if (currentLetter == '9') currentLetter = ' ';
+  else if (currentLetter == ' ') currentLetter = 'A';
+  else currentLetter++;
+}
+
+void lettrePrecedente() {
+  if (currentLetter == 'A') currentLetter = ' ';
+  else if (currentLetter == ' ') currentLetter = '9';
+  else if (currentLetter == '0') currentLetter = 'Z';
+  else currentLetter--;
+}
+
+bool verifierAppuiBasA6() {
+  if (analogRead(BTN_SEND) < 100) {
+    delay(20); 
+    if (analogRead(BTN_SEND) < 100) return true;
+  }
+  return false;
+}
+
+void resetSystem() {
+  currentMode = MODE_MENU_PRINCIPAL;
+  menuSelection = 0;
+  memset(sharedBuffer, 0, MAX_MESSAGE_LEN);
+  setLedColor(255); 
+  digitalWrite(PIN_BUZZER, LOW);
+  updateDisplay();
+}
 
 void setup() {
-  Serial.begin(9600);
-
-  pinMode(PIN_BUZZER, OUTPUT);
-  digitalWrite(PIN_BUZZER, LOW); 
-  
   pinMode(ENC_CLK, INPUT);
   pinMode(ENC_DT, INPUT);
   pinMode(ENC_SW, INPUT_PULLUP); 
-
   lastClkState = digitalRead(ENC_CLK);
 
-  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    for(;;);
-  }
-  display.setTextColor(SSD1306_WHITE);
-  
-  if (!radio.begin()) {
-    display.clearDisplay();
-    display.setCursor(0,0);
-    display.println("Erreur Radio !");
-    display.display();
-    while (1);
-  }
-  radio.setPALevel(RF24_PA_MIN);
-
-  if (radioNumber == 0) {
-    radio.openWritingPipe(addresses[1]);
-    radio.openReadingPipe(1, addresses[0]);
-  } else {
-    radio.openWritingPipe(addresses[0]);
-    radio.openReadingPipe(1, addresses[1]);
-  }
-  radio.startListening();
-
-  resetComposition();
+  initAffichage();
+  loadSettings();
+  initRadio();
+  configurerRadio();
+  resetSystem(); 
 }
 
 void loop() {
-  // --- 1. RECEPTION ---
-  if (radio.available()) {
-    char text[32] = "";
-    radio.read(&text, sizeof(text));
-    afficherMessageRecu(text);
-    messageTimer = millis();
-    showingReceived = true;
-  }
+  
+  // 1. Radio (Vérifie si msg reçu)
+  ecouterRadio();
 
-  if (showingReceived && (millis() - messageTimer > 4000)) {
-    showingReceived = false;
-    updateDisplayComposition(); 
-  }
-
-  if (showingReceived) return; 
-
-  // --- 2. ENCODEUR ---
+  // 2. Gestion Entrées
   int currentClkState = digitalRead(ENC_CLK);
-  if (currentClkState != lastClkState && currentClkState == 0) {
-    if (digitalRead(ENC_DT) != currentClkState) {
-      charIndex++; 
-      if (charIndex >= charsetLen) charIndex = 0;
-    } else {
-      charIndex--; 
-      if (charIndex < 0) charIndex = charsetLen - 1;
-    }
-    updateDisplayComposition(); 
-  }
-  lastClkState = currentClkState;
+  bool encMoved = (currentClkState != lastClkState && currentClkState == 0);
+  bool encDir = (digitalRead(ENC_DT) != currentClkState); 
+  
+  bool btnClicked = (digitalRead(ENC_SW) == LOW);
+  if (btnClicked && millis() - lastDebounceTime < 250) btnClicked = false; 
+  if (btnClicked) lastDebounceTime = millis();
 
-  // --- 3. VALIDATION LETTRE (D2) ---
-  if (digitalRead(ENC_SW) == LOW) { 
-    if (millis() - lastDebounceTime > 250) { 
-      if (cursorPosition < 30) { 
-        messageBuffer[cursorPosition] = charset[charIndex];
-        cursorPosition++;
-        messageBuffer[cursorPosition] = '\0'; 
+  bool btnA6 = verifierAppuiBasA6();
+
+  switch (currentMode) {
+    // MENU PRINCIPAL
+    case MODE_MENU_PRINCIPAL:
+      if (encMoved) {
+        menuSelection = !menuSelection; 
+        updateDisplay();
       }
-      updateDisplayComposition();
-      lastDebounceTime = millis();
-    }
+      if (btnClicked) { 
+        if (menuSelection == 0) {
+          currentMode = MODE_ECRITURE;
+          cursorPosition = 0;
+          memset(sharedBuffer, 0, MAX_MESSAGE_LEN);
+        } else {
+          currentMode = MODE_MENU_REGLAGE;
+          menuSelection = 0;
+        }
+        updateDisplay();
+      }
+      break;
+
+    // MENU REGLAGES
+    case MODE_MENU_REGLAGE:
+      if (encMoved) {
+        if (encDir) {
+           menuSelection++;
+           if(menuSelection > 3) menuSelection = 0;
+        } else {
+           menuSelection--;
+           if(menuSelection < 0) menuSelection = 3;
+        }
+        updateDisplay();
+      }
+      if (btnClicked) {
+        if (menuSelection == 0) { // PSEUDO
+           currentMode = MODE_EDIT_PSEUDO;
+           cursorPosition = strlen(myPseudo);
+           if(cursorPosition >= PSEUDO_LEN - 1) cursorPosition = 0;
+           currentLetter = 'A';
+        } else if (menuSelection == 1) { // CANAL
+           currentMode = MODE_EDIT_CANAL;
+        } else if (menuSelection == 2) { // SLOT
+           currentMode = MODE_EDIT_SLOT;
+        } else if (menuSelection == 3) { // SOUND
+           currentMode = MODE_EDIT_SOUND;
+        }
+        updateDisplay();
+      }
+      if (btnA6) { 
+        currentMode = MODE_MENU_PRINCIPAL;
+        updateDisplay();
+        delay(400);
+      }
+      break;
+
+    // EDITER PSEUDO
+    case MODE_EDIT_PSEUDO:
+      if (encMoved) {
+        if (encDir) lettreSuivante(); else lettrePrecedente();
+        updateDisplay();
+      }
+      if (btnClicked) { 
+        if (cursorPosition < PSEUDO_LEN - 1) {
+          myPseudo[cursorPosition] = currentLetter;
+          cursorPosition++;
+          myPseudo[cursorPosition] = '\0';
+        } else {
+          cursorPosition = 0;
+        }
+        updateDisplay();
+      }
+      if (btnA6) { 
+        saveSettingsAll();
+        currentMode = MODE_MENU_REGLAGE;
+        updateDisplay();
+        delay(400);
+      }
+      break;
+
+    // EDITER CANAL
+    case MODE_EDIT_CANAL:
+      if (encMoved) {
+        if (encDir) { if (radioChannel < 125) radioChannel++; }
+        else { if (radioChannel > 0) radioChannel--; }
+        configurerRadio(); 
+        updateDisplay();
+      }
+      if (btnClicked || btnA6) { 
+        saveSettingsAll();
+        currentMode = MODE_MENU_REGLAGE;
+        updateDisplay();
+        delay(400);
+      }
+      break;
+
+    // EDITER SLOT
+    case MODE_EDIT_SLOT:
+      if (encMoved) {
+        radioSlot = !radioSlot;
+        updateDisplay();
+      }
+      if (btnClicked || btnA6) {
+        saveSettingsAll();
+        configurerRadio(); 
+        currentMode = MODE_MENU_REGLAGE;
+        updateDisplay();
+        delay(400);
+      }
+      break;
+
+    // EDITER SOUND
+    case MODE_EDIT_SOUND:
+      if (encMoved) {
+        if (encDir) { 
+          alertSound++; if(alertSound > 2) alertSound = 0; 
+        } else { 
+          if(alertSound == 0) alertSound = 2; else alertSound--; 
+        }
+        updateDisplay();
+        previewSound(); 
+      }
+      if (btnClicked || btnA6) {
+        saveSettingsAll();
+        currentMode = MODE_MENU_REGLAGE;
+        updateDisplay();
+        delay(400);
+      }
+      break;
+
+    // ECRITURE
+    case MODE_ECRITURE:
+      setLedColor(255); 
+      if (encMoved) {
+        if (encDir) lettreSuivante(); else lettrePrecedente();
+        updateDisplay(); 
+      }
+      if (btnClicked) { 
+        if (cursorPosition < MAX_MESSAGE_LEN - 1) { 
+          sharedBuffer[cursorPosition] = currentLetter;
+          cursorPosition++;
+          sharedBuffer[cursorPosition] = '\0'; 
+        }
+        updateDisplay();
+      }
+      if (btnA6) {
+         currentMode = MODE_CHOIX_PRIORITE;
+         selectedPriority = PRIO_FAIBLE; 
+         updateDisplay();
+         delay(500);
+      }
+      break;
+
+    // CHOIX PRIORITE
+    case MODE_CHOIX_PRIORITE:
+      setLedColor(selectedPriority);
+      if (encMoved) {
+        if (encDir) {
+           selectedPriority++;
+           if (selectedPriority > 2) selectedPriority = 0;
+        } else {
+           if (selectedPriority == 0) selectedPriority = 2;
+           else selectedPriority--;
+        }
+        updateDisplay(); 
+      }
+      if (btnA6) {
+          envoyerMessageLong();
+          currentMode = MODE_MENU_PRINCIPAL; 
+          setLedColor(255);
+          updateDisplay();
+          delay(500);
+      }
+      if (btnClicked) {
+          currentMode = MODE_ECRITURE;
+          updateDisplay();
+      }
+      break;
+
+    // ALERTE RECU
+    case MODE_ALERTE_RECU:
+      gererAlarmeSonore();
+      if (btnA6) {
+         setLedColor(255); 
+         digitalWrite(PIN_BUZZER, LOW);
+         currentMode = MODE_MENU_PRINCIPAL;
+         updateDisplay();
+         delay(500);
+      }
+      break;
   }
-
-  // --- 4. ENVOI MESSAGE (A6 INVERSÉ / PULL UP) ---
-  // On appelle la fonction corrigée
-  if (verifierAppuiBasA6()) { 
-      envoyerMessage(); 
-      resetComposition(); 
-      delay(500); 
-  }
-}
-
-// --- FONCTIONS ---
-
-// NOUVELLE LOGIQUE : On cherche le 0V (GND)
-bool verifierAppuiBasA6() {
-  int lecture = analogRead(BTN_SEND);
   
-  // 1. Détection : Est-ce que la valeur est proche de 0 ? (Bouton enfoncé vers GND)
-  // On prend < 100 pour être sûr (0V = 0, mais on laisse une marge de bruit)
-  if (lecture > 100) return false; // Si > 100, c'est relâché (5V ou flottant haut)
-
-  // 2. Filtrage (Anti-Rebond)
-  // On vérifie que ça reste à 0 pendant 40ms
-  for (int i = 0; i < 20; i++) {
-    delay(2); 
-    if (analogRead(BTN_SEND) > 100) {
-      return false; // C'est remonté, donc c'était un parasite
-    }
-  }
-
-  // 3. Confirmation : C'est bien un appui long à la masse
-  return true;
-}
-
-void resetComposition() {
-  memset(messageBuffer, 0, sizeof(messageBuffer));
-  cursorPosition = 0;
-  charIndex = 0; 
-  updateDisplayComposition();
-}
-
-void updateDisplayComposition() {
-  if (showingReceived) return; 
-
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setCursor(0,0);
-  display.print("Msg: ");
-  display.print(cursorPosition);
-  display.print("/30");
-
-  display.setCursor(0, 15);
-  display.print(messageBuffer);
-
-  display.setCursor(0, 45);
-  display.setTextSize(2);
-  display.print("Let: ");
-  display.setTextColor(SSD1306_BLACK, SSD1306_WHITE); 
-  display.print(charset[charIndex]);
-  display.setTextColor(SSD1306_WHITE); 
-
-  display.display();
-}
-
-void envoyerMessage() {
-  radio.stopListening();
-  
-  display.clearDisplay();
-  display.display(); // Ecran noir
-  
-  radio.write(&messageBuffer, sizeof(messageBuffer));
-  
-  delay(100); 
-  radio.startListening();
-}
-
-void afficherMessageRecu(char* msg) {
-  display.clearDisplay();
-  display.setCursor(0, 0);
-  display.setTextSize(1);
-  display.println("RECU :");
-  display.drawLine(0, 10, 128, 10, SSD1306_WHITE);
-  
-  display.setCursor(0, 25);
-  display.setTextSize(2);
-  display.println(msg);
-  
-  display.display();
+  lastClkState = currentClkState;
 }
