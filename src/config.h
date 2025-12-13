@@ -4,7 +4,7 @@
 #include <Arduino.h>
 
 // --- CONSTANTES ---
-#define MAX_MESSAGE_LEN 100   
+#define MAX_MESSAGE_LEN 120
 #define PSEUDO_LEN 6          
 #define PACKET_DATA_SIZE 22   
 
