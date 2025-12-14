@@ -7,21 +7,21 @@
 #include "Navigation.h"
 
 void setup() {
+  // Toutes les initialisations
   initControl();
   initAffichage();
   loadSettings();
   initRadio();
   configurerRadio();
   
-  // Init menu
+  // Initialisation menu
   currentMode = MainMenu;
   updateDisplay();
 }
 
 void loop() {
-  // 1. Tâche de fond : écouter la radio
   ecouterRadio();
 
-  // 2. Gérer toute la logique (Menus, Ecriture, Reglages)
+  //Gérer toute la logique (Menus, Ecriture, Reglages)
   handleNavigation();
 }
