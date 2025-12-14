@@ -3,30 +3,30 @@
 int lastClkState;
 unsigned long lastDebounceTime = 0;
 
-void initControle() {
-  pinMode(ENC_CLK, INPUT);
+void initControl() {
+  pinMode(EncCLK, INPUT);
   pinMode(ENC_DT, INPUT);
-  pinMode(ENC_SW, INPUT_PULLUP); 
-  lastClkState = digitalRead(ENC_CLK);
+  pinMode(EncSW, INPUT_PULLUP); 
+  lastClkState = digitalRead(EncCLK);
 }
 
-int lireEncodeurDir() {
-  int currentClkState = digitalRead(ENC_CLK);
+int readEncDir() {
+  int currentClkState = digitalRead(EncCLK);
   int direction = 0;
   
   if (currentClkState != lastClkState && currentClkState == 0) {
     if (digitalRead(ENC_DT) != currentClkState) {
-      direction = 1; // Droite
+      direction = 1; // CW
     } else {
-      direction = -1; // Gauche
+      direction = -1; // CCW
     }
   }
   lastClkState = currentClkState;
   return direction;
 }
 
-bool lireBoutonSW() {
-  if (digitalRead(ENC_SW) == LOW) {
+bool readSWBtn() {
+  if (digitalRead(EncSW) == LOW) {
     if (millis() - lastDebounceTime > 250) {
       lastDebounceTime = millis();
       return true;
@@ -35,10 +35,10 @@ bool lireBoutonSW() {
   return false;
 }
 
-bool lireBoutonA6() {
-  if (analogRead(BTN_SEND) < 100) {
+bool readSendBtn() {
+  if (analogRead(SendBtn) < 100) {
     delay(20); // Petit debounce hardware
-    if (analogRead(BTN_SEND) < 100) return true;
+    if (analogRead(SendBtn) < 100) return true;
   }
   return false;
 }

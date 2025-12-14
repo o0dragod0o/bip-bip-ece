@@ -1,7 +1,3 @@
-/*
-* PROJET BIP BIP ECE - VERSION MODULAIRE FINALE
-*/
-
 #include "Config.h"
 #include "Globals.h"
 #include "Controle.h"
@@ -11,14 +7,14 @@
 #include "Navigation.h"
 
 void setup() {
-  initControle();
+  initControl();
   initAffichage();
   loadSettings();
   initRadio();
   configurerRadio();
   
   // Init menu
-  currentMode = MODE_MENU_PRINCIPAL;
+  currentMode = MainMenu;
   updateDisplay();
 }
 
@@ -27,5 +23,5 @@ void loop() {
   ecouterRadio();
 
   // 2. Gérer toute la logique (Menus, Ecriture, Reglages)
-  gererNavigation();
+  handleNavigation();
 }

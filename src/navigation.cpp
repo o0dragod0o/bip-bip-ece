@@ -4,114 +4,102 @@
 #include "Sauvegarde.h"
 #include "Radio.h"
 
-// --- FONCTIONS LOCALES ---
-void lettreSuivante() {
+//FONCTIONS LOCALES
+void nextLetter() {
   if (currentLetter == 'Z') currentLetter = '0'; 
   else if (currentLetter == '9') currentLetter = ' '; 
   else if (currentLetter == ' ') currentLetter = 'A'; 
   else currentLetter++;
 }
 
-void lettrePrecedente() {
+void prevLetter() {
   if (currentLetter == 'A') currentLetter = ' '; 
   else if (currentLetter == ' ') currentLetter = '9'; 
   else if (currentLetter == '0') currentLetter = 'Z'; 
   else currentLetter--;
 }
 
-// --- LOGIQUE PRINCIPALE ---
-void gererNavigation() {
+//LOGIQUE PRINCIPALE
+void handleNavigation() {
   // 1. Lire toutes les entrées une seule fois au début
-  int dir = lireEncodeurDir(); // -1, 0, ou 1
-  bool click = lireBoutonSW(); // Vrai si cliqué
-  bool a6 = lireBoutonA6();    // Vrai si appuyé
+  int dir = readEncDir(); // -1, 0, ou 1
+  bool click = readSWBtn(); // Vrai si cliqué
+  bool a6 = readSendBtn();    // Vrai si appuyé
 
   // 2. Machine à état
   switch (currentMode) {
-
-    // ====================================================
     // 1. MENU PRINCIPAL
-    // ====================================================
-    case MODE_MENU_PRINCIPAL:
+    case MainMenu:
       if (dir != 0) { 
-        menuSelection = !menuSelection; // Bascule 0 <-> 1
+        selectionMenu = !selectionMenu; // Bascule 0 <-> 1
         updateDisplay(); 
       }
       if (click) { 
-        if (menuSelection == 0) { 
-          currentMode = MODE_ECRITURE; 
+        if (selectionMenu == 0) { 
+          currentMode = WritingMode; 
           cursorPosition = 0; 
-          memset(sharedBuffer, 0, MAX_MESSAGE_LEN); 
+          memset(sharedBuffer, 0, MaxMessageLen); 
         } else { 
-          currentMode = MODE_MENU_REGLAGE; 
-          menuSelection = 0; 
+          currentMode = SettingsMenu; 
+          selectionMenu = 0; 
         }
         updateDisplay();
       }
       break;
-
-    // ====================================================
     // 2. MENU REGLAGES (Navigation Verticale)
-    // ====================================================
-    case MODE_MENU_REGLAGE:
+    case SettingsMenu:
       if (dir != 0) {
          if(dir > 0) { // Descente
-            menuSelection++; 
-            if(menuSelection > 3) menuSelection = 0;
+            selectionMenu++; 
+            if(selectionMenu > 3) selectionMenu = 0;
          } else {      // Montée
-            menuSelection--; 
-            if(menuSelection < 0) menuSelection = 3;
+            selectionMenu--; 
+            if(selectionMenu < 0) selectionMenu = 3;
          }
          updateDisplay();
       }
       if (click) {
-         if (menuSelection == 0) {      // PSEUDO
-            currentMode = MODE_EDIT_PSEUDO; 
+         if (selectionMenu == 0) {      // PSEUDO
+            currentMode = PseudoMode; 
             cursorPosition = strlen(myPseudo); 
-            if(cursorPosition >= PSEUDO_LEN - 1) cursorPosition = 0; // Sécurité
+            if(cursorPosition >= PseudoLen - 1) cursorPosition = 0; // Sécurité
             currentLetter = 'A'; 
          } 
-         else if (menuSelection == 1) currentMode = MODE_EDIT_CANAL;
-         else if (menuSelection == 2) currentMode = MODE_EDIT_SLOT;
-         else if (menuSelection == 3) currentMode = MODE_EDIT_SOUND;
+         else if (selectionMenu == 1) currentMode = CanalEditMode;
+         else if (selectionMenu == 2) currentMode = SlotEditMode;
+         else if (selectionMenu == 3) currentMode = SoundEditMode;
          updateDisplay();
       }
       if (a6) { // RETOUR
-         currentMode = MODE_MENU_PRINCIPAL; 
+         currentMode = MainMenu; 
          updateDisplay(); 
          delay(400); 
       }
       break;
-
-    // ====================================================
     // 3. ECRITURE MESSAGE (Fonctionne déjà, on garde)
-    // ====================================================
-    case MODE_ECRITURE:
+    case WritingMode:
       if (dir != 0) { 
-         if(dir > 0) lettreSuivante(); 
-         else lettrePrecedente(); 
+         if(dir > 0) nextLetter(); 
+         else prevLetter(); 
          updateDisplay(); 
       }
       if (click) { 
-         if (cursorPosition < MAX_MESSAGE_LEN-1) { 
+         if (cursorPosition < MaxMessageLen-1) { 
             sharedBuffer[cursorPosition] = currentLetter; 
             cursorPosition++; 
             sharedBuffer[cursorPosition] = '\0'; 
          }
          updateDisplay();
       }
-      if (a6) { // FINI -> CHOIX PRIORITE
-         currentMode = MODE_CHOIX_PRIORITE; 
-         selectedPriority = PRIO_FAIBLE; 
+      if (a6) { // CHOIX PRIORITE
+         currentMode = PriorityMode; 
+         selectedPriority = LowPrio; 
          updateDisplay(); 
          delay(500); 
       }
       break;
-
-    // ====================================================
-    // 4. CHOIX PRIORITE (C'était bloqué ici)
-    // ====================================================
-    case MODE_CHOIX_PRIORITE:
+    // 4. CHOIX PRIORITE
+    case PriorityMode:
       if (dir != 0) {
          if (dir > 0) { // Rotation Droite
             selectedPriority++;
@@ -126,29 +114,26 @@ void gererNavigation() {
       // Ici, A6 sert à ENVOYER
       if (a6) {
           envoyerMessageLong();       // Action d'envoi
-          currentMode = MODE_MENU_PRINCIPAL; 
+          currentMode = MainMenu; 
           setLedColor(255);           // Eteindre LED
           updateDisplay();
           delay(500);
       }
-      // Click molette pour ANNULER et revenir à l'écriture
+      // appui bouton SW pour ANNULER et revenir à l'écriture
       if (click) {
-          currentMode = MODE_ECRITURE;
+          currentMode = WritingMode;
           updateDisplay();
       }
       break;
-
-    // ====================================================
     // 5. EDITER PSEUDO
-    // ====================================================
-    case MODE_EDIT_PSEUDO:
+    case PseudoMode:
       if (dir != 0) { 
-         if(dir > 0) lettreSuivante(); 
-         else lettrePrecedente(); 
+         if(dir > 0) nextLetter(); 
+         else prevLetter(); 
          updateDisplay(); 
       }
       if (click) { // Lettre suivante
-         if (cursorPosition < PSEUDO_LEN - 1) {
+         if (cursorPosition < PseudoLen - 1) {
             myPseudo[cursorPosition] = currentLetter;
             cursorPosition++;
             myPseudo[cursorPosition] = '\0';
@@ -159,16 +144,13 @@ void gererNavigation() {
       }
       if (a6) { // SAUVEGARDER ET QUITTER
          saveSettingsAll();
-         currentMode = MODE_MENU_REGLAGE;
+         currentMode = SettingsMenu;
          updateDisplay();
          delay(400);
       }
       break;
-
-    // ====================================================
     // 6. EDITER CANAL
-    // ====================================================
-    case MODE_EDIT_CANAL:
+    case CanalEditMode:
       if (dir != 0) {
          if (dir > 0) { if (radioChannel < 125) radioChannel++; }
          else         { if (radioChannel > 0) radioChannel--; }
@@ -178,16 +160,13 @@ void gererNavigation() {
       }
       if (click || a6) { // VALIDER
          saveSettingsAll();
-         currentMode = MODE_MENU_REGLAGE;
+         currentMode = SettingsMenu;
          updateDisplay();
          delay(400);
       }
       break;
-
-    // ====================================================
     // 7. EDITER SLOT (MODE RADIO A/B)
-    // ====================================================
-    case MODE_EDIT_SLOT:
+    case SlotEditMode:
       if (dir != 0) {
          radioSlot = !radioSlot; // Bascule simplement 0 ou 1
          updateDisplay();
@@ -195,16 +174,13 @@ void gererNavigation() {
       if (click || a6) { // VALIDER
          saveSettingsAll();
          configurerRadio(); // Important de reconfigurer les tuyaux radio
-         currentMode = MODE_MENU_REGLAGE;
+         currentMode = SettingsMenu;
          updateDisplay();
          delay(400);
       }
       break;
-
-    // ====================================================
     // 8. EDITER SONORITE
-    // ====================================================
-    case MODE_EDIT_SOUND:
+    case SoundEditMode:
       if (dir != 0) {
          if (dir > 0) { 
             alertSound++; 
@@ -218,22 +194,19 @@ void gererNavigation() {
       }
       if (click || a6) { // VALIDER
          saveSettingsAll();
-         currentMode = MODE_MENU_REGLAGE;
+         currentMode = SettingsMenu;
          updateDisplay();
          delay(400);
       }
       break;
-
-    // ====================================================
     // 9. ALERTE RECU
-    // ====================================================
-    case MODE_ALERTE_RECU:
-       gererAlarmeSonore(); // Doit être appelé en boucle
+    case AlarmMode:
+       handleAlarm(); // Doit être appelé en boucle
        
        if (a6) { // ACQUITTER
           setLedColor(255); 
-          digitalWrite(PIN_BUZZER, LOW); 
-          currentMode = MODE_MENU_PRINCIPAL; 
+          digitalWrite(BuzzerPin, LOW); 
+          currentMode = MainMenu; 
           updateDisplay(); 
           delay(500); 
        }

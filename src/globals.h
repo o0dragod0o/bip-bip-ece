@@ -13,9 +13,9 @@ extern RF24 radio;
 extern const byte pipes[][6];
 
 extern char currentLetter; 
-extern char sharedBuffer[MAX_MESSAGE_LEN]; 
-extern char myPseudo[PSEUDO_LEN]; 
-extern char receivedPseudo[PSEUDO_LEN];     
+extern char sharedBuffer[MaxMessageLen]; 
+extern char myPseudo[PseudoLen]; 
+extern char receivedPseudo[PseudoLen];     
 
 extern int cursorPosition; 
 extern byte currentMsgId; 
@@ -27,7 +27,7 @@ extern byte radioSlot;
 extern byte alertSound; 
 
 extern Mode currentMode;
-extern int menuSelection; 
+extern int selectionMenu; 
 extern unsigned long buzzerTimer;
 extern int buzzerStep;
 

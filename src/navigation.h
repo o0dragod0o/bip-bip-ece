@@ -2,6 +2,6 @@
 #define NAVIGATION_H
 #include "Globals.h"
 
-void gererNavigation();
+void handleNavigation();
 
 #endif
