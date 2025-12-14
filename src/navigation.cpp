@@ -4,8 +4,8 @@
 #include "Sauvegarde.h"
 #include "Radio.h"
 
-//FONCTIONS LOCALES
 void nextLetter() {
+  // Tansitions entre lettres chiffres et espace
   if (currentLetter == 'Z') currentLetter = '0'; 
   else if (currentLetter == '9') currentLetter = ' '; 
   else if (currentLetter == ' ') currentLetter = 'A'; 
@@ -19,19 +19,17 @@ void prevLetter() {
   else currentLetter--;
 }
 
-//LOGIQUE PRINCIPALE
 void handleNavigation() {
-  // 1. Lire toutes les entrées une seule fois au début
-  int dir = readEncDir(); // -1, 0, ou 1
+  //Lire toutes les entrées une seule fois au début
+  int dir = readEncDir();
   bool click = readSWBtn(); // Vrai si cliqué
   bool a6 = readSendBtn();    // Vrai si appuyé
 
-  // 2. Machine à état
   switch (currentMode) {
     // 1. MENU PRINCIPAL
     case MainMenu:
       if (dir != 0) { 
-        selectionMenu = !selectionMenu; // Bascule 0 <-> 1
+        selectionMenu = !selectionMenu;
         updateDisplay(); 
       }
       if (click) { 
@@ -46,7 +44,7 @@ void handleNavigation() {
         updateDisplay();
       }
       break;
-    // 2. MENU REGLAGES (Navigation Verticale)
+    //MENU REGLAGES
     case SettingsMenu:
       if (dir != 0) {
          if(dir > 0) { // Descente
@@ -76,7 +74,7 @@ void handleNavigation() {
          delay(400); 
       }
       break;
-    // 3. ECRITURE MESSAGE (Fonctionne déjà, on garde)
+    // Ecriture message
     case WritingMode:
       if (dir != 0) { 
          if(dir > 0) nextLetter(); 
@@ -91,14 +89,14 @@ void handleNavigation() {
          }
          updateDisplay();
       }
-      if (a6) { // CHOIX PRIORITE
+      if (a6) { // choix priorité
          currentMode = PriorityMode; 
          selectedPriority = LowPrio; 
          updateDisplay(); 
          delay(500); 
       }
       break;
-    // 4. CHOIX PRIORITE
+    // choix priorité
     case PriorityMode:
       if (dir != 0) {
          if (dir > 0) { // Rotation Droite
@@ -113,19 +111,19 @@ void handleNavigation() {
       
       // Ici, A6 sert à ENVOYER
       if (a6) {
-          envoyerMessageLong();       // Action d'envoi
+          envoyerMessageLong();
           currentMode = MainMenu; 
-          setLedColor(255);           // Eteindre LED
+          setLedColor(255);
           updateDisplay();
           delay(500);
       }
-      // appui bouton SW pour ANNULER et revenir à l'écriture
+      // Appui bouton SW pour annuler et revenir à l'écriture
       if (click) {
           currentMode = WritingMode;
           updateDisplay();
       }
       break;
-    // 5. EDITER PSEUDO
+    // Editer le pseudo
     case PseudoMode:
       if (dir != 0) { 
          if(dir > 0) nextLetter(); 
@@ -149,13 +147,13 @@ void handleNavigation() {
          delay(400);
       }
       break;
-    // 6. EDITER CANAL
+    // Editer Canal
     case CanalEditMode:
       if (dir != 0) {
          if (dir > 0) { if (radioChannel < 125) radioChannel++; }
          else         { if (radioChannel > 0) radioChannel--; }
          
-         configurerRadio(); // Applique le changement immédiatement pour tester
+         configurerRadio();
          updateDisplay();
       }
       if (click || a6) { // VALIDER
@@ -165,21 +163,21 @@ void handleNavigation() {
          delay(400);
       }
       break;
-    // 7. EDITER SLOT (MODE RADIO A/B)
+    // 7. Editer Slot
     case SlotEditMode:
       if (dir != 0) {
-         radioSlot = !radioSlot; // Bascule simplement 0 ou 1
+         radioSlot = !radioSlot;
          updateDisplay();
       }
       if (click || a6) { // VALIDER
          saveSettingsAll();
-         configurerRadio(); // Important de reconfigurer les tuyaux radio
+         configurerRadio();
          currentMode = SettingsMenu;
          updateDisplay();
          delay(400);
       }
       break;
-    // 8. EDITER SONORITE
+    // 8. Editer sonorité
     case SoundEditMode:
       if (dir != 0) {
          if (dir > 0) { 
@@ -190,7 +188,7 @@ void handleNavigation() {
             else alertSound--; 
          }
          updateDisplay();
-         previewSound(); // Petit bip pour entendre le choix
+         previewSound();
       }
       if (click || a6) { // VALIDER
          saveSettingsAll();
@@ -199,11 +197,11 @@ void handleNavigation() {
          delay(400);
       }
       break;
-    // 9. ALERTE RECU
+    // Alerte Recu
     case AlarmMode:
-       handleAlarm(); // Doit être appelé en boucle
+       handleAlarm();
        
-       if (a6) { // ACQUITTER
+       if (a6) {
           setLedColor(255); 
           digitalWrite(BuzzerPin, LOW); 
           currentMode = MainMenu; 
