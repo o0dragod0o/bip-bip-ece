@@ -27,6 +27,7 @@ int readEncDir() {
 
 bool readSWBtn() {
   if (digitalRead(EncSW) == LOW) {
+    //eviter rebonds
     if (millis() - lastDebounceTime > 250) {
       lastDebounceTime = millis();
       return true;
@@ -37,7 +38,7 @@ bool readSWBtn() {
 
 bool readSendBtn() {
   if (analogRead(SendBtn) < 100) {
-    delay(20); // Petit debounce hardware
+    delay(20); //eviter rebonds
     if (analogRead(SendBtn) < 100) return true;
   }
   return false;
