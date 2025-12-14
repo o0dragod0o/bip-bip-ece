@@ -8,6 +8,7 @@ void initAffichage() {
   pinMode(BuzzerPin, OUTPUT);
   digitalWrite(BuzzerPin, LOW); 
 
+  // initialisation de l'écran
   if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { for(;;); }
   display.setTextColor(SSD1306_WHITE);
   display.clearDisplay();
@@ -21,16 +22,18 @@ void setLedColor(byte p) {
     analogWrite(RedPin, 255);
     analogWrite(GreenPin, 222);
     analogWrite(BluePin, 33);
+    //jaune
   }else if (p == HighPrio)analogWrite(RedPin, 255);
 }
 void previewSound() {
   digitalWrite(BuzzerPin, HIGH); 
-  delay(alertSound == ClassicSound ? 100 : 50); 
+  delay(alertSound == ClassicSound ? 100 : 50); // delay depend de l'alarme
   digitalWrite(BuzzerPin, LOW);
 }
 
 void handleAlarm() {
   unsigned long currentMillis = millis();
+  //tempo en fonction de la priorité
   int tempo = 1000; 
   if (receivedPriority == AveragePrio) tempo = 500;
   if (receivedPriority == HighPrio) tempo = 150; 
@@ -52,7 +55,7 @@ void updateDisplay() {
   display.setCursor(0,0);
   display.setTextSize(1);
 
-  // --- MENU PRINCIPAL ---
+  //MENU PRINCIPAL
   if (currentMode == MainMenu) {
     display.println(F("MENU PRINCIPAL:"));
     display.print(selectionMenu == 0 ? F("> ") : F("  "));
@@ -63,7 +66,7 @@ void updateDisplay() {
     display.print(radioSlot==0?F("A"): F("B"));
     display.print(F("]"));
   }
-  // --- MENU REGLAGES ---
+  //MENU REGLAGES
   else if (currentMode == SettingsMenu) {
     display.println(F("REGLAGES:"));
     display.print(selectionMenu == 0 ? F(">") : F(" "));
@@ -81,7 +84,7 @@ void updateDisplay() {
     display.setCursor(0, 58);
     display.print(F("[A6] RETOUR"));
   }
-  // --- SOUS-MENUS ---
+  //SOUS-MENUS
   else if (currentMode == SoundEditMode) {
     display.println(F("CHOIX SONNERIE:"));
     display.drawLine(0, 20, 128, 20, SSD1306_WHITE);
@@ -150,16 +153,16 @@ void updateDisplay() {
     display.print(F("[A6] ENVOYER"));
   }
 
-  // --- MODE ECRITURE ---
+  //MODE ECRITURE
   else if (currentMode == WritingMode) {
-    // 1. En-tête fixe
+    //En-tête fixe
     display.print(F("Msg: "));
     display.print(cursorPosition);
     display.print(F("/"));
     display.println(MaxMessageLen - 1);
     
-    // 2. Zone de texte (Scrolling)
-    int maxVisible = 63; 
+    //Zone de texte (Scrolling)
+    int maxVisible = 63;
     int startIndex = 0;
     if (cursorPosition > maxVisible) startIndex = cursorPosition - maxVisible;
     
@@ -168,23 +171,19 @@ void updateDisplay() {
     display.print(&sharedBuffer[startIndex]);
     if (cursorPosition < MaxMessageLen-1) display.print(F("_")); 
     
-    // 3. Pied de page (CORRIGÉ)
+    //Pied de page
     // On remonte la ligne à Y=45 pour laisser de la place en dessous
     display.drawLine(0, 45, 128, 45, SSD1306_WHITE);
     
-    // Affichage du label "Choix:" en petit
+    // Affichage de "Choix:"
     display.setCursor(0, 52);
     display.setTextSize(1);
     display.print(F("Choix: ")); 
     
-    // Affichage de la LETTRE en GROS juste à côté
-    // On se place à X=40 (après "Choix: ") et Y=48 (pour que ça tienne en hauteur)
+    // Affichage de la LETTRE en GROS
     display.setCursor(42, 48);
     display.setTextSize(2); 
     display.print(currentLetter); 
-    
-    // On dessine un petit cadre autour de la lettre pour faire joli (optionnel)
-    // display.drawRect(40, 46, 16, 18, SSD1306_WHITE);
   }
   
   display.display();
