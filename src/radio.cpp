@@ -7,7 +7,7 @@ void initRadio() {
 }
 
 void configurerRadio() {
-  radio.stopListening();
+  radio.stopListening(); // Passage en mode écriture
   radio.setChannel(radioChannel);
   if (radioSlot == 0) { 
     radio.openWritingPipe(pipes[1]);
@@ -17,11 +17,11 @@ void configurerRadio() {
     radio.openWritingPipe(pipes[0]);
     radio.openReadingPipe(1, pipes[1]);
   }
-  radio.startListening();
+  radio.startListening(); // Passage en mode lecture
 }
 
 void envoyerMessageLong() {
-  radio.stopListening();
+  radio.stopListening(); // Passage en mode écriture
   display.clearDisplay();
   display.setCursor(0, 20);
   display.println(F("Envoi..."));
@@ -30,12 +30,14 @@ void envoyerMessageLong() {
   setLedColor(selectedPriority);
   delay(100); setLedColor(255);
 
+  //definition du nombre de paquets
   int msgLen = strlen(sharedBuffer);
   int totalPackets = (msgLen / PacketDataSize);
   if ((msgLen % PacketDataSize) != 0) totalPackets++;
   if (totalPackets == 0) totalPackets = 1; 
   currentMsgId++;
 
+  //découpage en paquets
   for (int i = 0; i < totalPackets; i++) {
     Packet pkt;
     pkt.msgId = currentMsgId;
@@ -53,18 +55,21 @@ void envoyerMessageLong() {
     radio.write(&pkt, sizeof(pkt));
     delay(40); 
   }
-  radio.startListening();
+  radio.startListening(); // Passage en mode lecture
 }
 
 void ecouterRadio() {
-  if (radio.available()) {
+  if (radio.available()) { //si données recues
     bool complet = false;
+    //reconstitution du message
     while (radio.available()) { 
-      Packet pkt; radio.read(&pkt, sizeof(pkt));
-      receivedPriority = pkt.priority;
-      strcpy(receivedPseudo, pkt.senderName); 
+      Packet pkt;
+      radio.read(&pkt, sizeof(pkt));
+      receivedPriority = pkt.priority; //priorité
+      strcpy(receivedPseudo, pkt.senderName); //pseudo
       int offset = pkt.packetIndex * PacketDataSize;
       if (offset < MaxMessageLen) {
+        //buffer pour éviter les dépassements de mémoire
          memcpy(sharedBuffer + offset, pkt.payload, (offset + PacketDataSize > MaxMessageLen) ? MaxMessageLen - offset : PacketDataSize);
          if (pkt.packetIndex == pkt.totalPackets - 1) {
           sharedBuffer[MaxMessageLen - 1] = '\0';
@@ -72,6 +77,7 @@ void ecouterRadio() {
         }
       }
     }
+    //déclanchement alarme et led
     if (complet) {
       currentMode = AlarmMode;
       buzzerTimer = millis();
