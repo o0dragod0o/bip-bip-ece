@@ -1,6 +1,6 @@
 #include "Globals.h"
 
-// Création réelle des objets et variables en mémoire
+// Création des objets et variables en mémoire
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 RF24 radio(PIN_CE, PIN_CSN);
 const byte pipes[][6] = {"00001", "00002"};
