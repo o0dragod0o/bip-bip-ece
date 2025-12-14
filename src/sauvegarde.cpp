@@ -1,6 +1,7 @@
 #include "Sauvegarde.h"
 
 void loadSettings() {
+  //on charge tous les paraùètres depuis la mémoire 
   byte marker = EEPROM.read(AddrMarker);
   if (marker != MagicByte) {
     radioChannel = 76;
@@ -19,6 +20,7 @@ void loadSettings() {
 }
 
 void saveSettingsAll() {
+  //on enregistre tous les paramètres en mémoire
   EEPROM.update(AddrChannel, radioChannel);
   EEPROM.update(AddrSlot, radioSlot);
   EEPROM.update(AddrSound, alertSound);
